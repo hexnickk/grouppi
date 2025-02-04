@@ -8,6 +8,7 @@ import {
   telegramUsersSchema,
 } from "./schema";
 import { desc, eq } from "drizzle-orm";
+import { browserService } from "./modules/browser";
 
 // Add custom context interface
 interface BotContext extends Context {
@@ -114,6 +115,7 @@ bot
     return await next();
   })
   .on(message("text"), async (ctx) => {
+    // ...existing database/history logic...
     const messages = await db
       .select()
       .from(telegramMessagesSchema)
@@ -125,6 +127,29 @@ bot
         eq(telegramMessagesSchema.userId, telegramUsersSchema.id),
       );
 
+    // Define the browser tool configuration in index.ts
+    const browserTool = [
+      {
+        type: "function",
+        function: {
+          name: "get_browser_content",
+          description: "Fetch HTML content from a website URL.",
+          parameters: {
+            type: "object",
+            properties: {
+              url: {
+                type: "string",
+                description: "The website URL to fetch HTML content from",
+              },
+            },
+            required: ["url"],
+            additionalProperties: false,
+          },
+          strict: true,
+        },
+      },
+    ];
+
     const answer = await openAIService.answerQuestion(
       ctx.message.text,
       messages.map(({ telegram_messages, telegram_users }) => ({
@@ -133,6 +158,7 @@ bot
         message: telegram_messages.message,
         createdAt: telegram_messages.createdAt,
       })),
+      browserTool,
     );
     if (!answer) return;
 
