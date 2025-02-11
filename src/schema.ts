@@ -7,6 +7,8 @@ export const telegramUsersSchema = sqliteTable(
     id: int("id").primaryKey({ autoIncrement: true }),
     pub_id: int("pub_id").notNull().unique(),
     username: text("username").unique(),
+    firstName: text("first_name"),
+    lastName: text("last_name"),
     createdAt: text("created_at")
       .notNull()
       .default(sql`(CURRENT_TIMESTAMP)`),
@@ -40,4 +42,40 @@ export const telegramMessagesSchema = sqliteTable(
       .$onUpdate(() => sql`(CURRENT_TIMESTAMP)`),
   },
   (table) => [index("telegram_messages_group_id_idx").on(table.groupId)],
+);
+
+export const telegramChatMemorySchema = sqliteTable(
+  "telegram_chat_memory",
+  {
+    id: int("id").primaryKey({ autoIncrement: true }),
+    chatId: int("chat_id").notNull(),
+    memory: text("memory").notNull(),
+    createdAt: text("created_at")
+      .notNull()
+      .default(sql`(CURRENT_TIMESTAMP)`),
+    updatedAt: text("updated_at")
+      .notNull()
+      .notNull()
+      .default(sql`(CURRENT_TIMESTAMP)`)
+      .$onUpdate(() => sql`(CURRENT_TIMESTAMP)`),
+  },
+  (table) => [index("memory_chat_id_idx").on(table.chatId)],
+);
+
+export const telegramUserMemorySchema = sqliteTable(
+  "telegram_user_memory",
+  {
+    id: int("id").primaryKey({ autoIncrement: true }),
+    userId: int("user_id").notNull(),
+    memory: text("memory").notNull(),
+    createdAt: text("created_at")
+      .notNull()
+      .default(sql`(CURRENT_TIMESTAMP)`),
+    updatedAt: text("updated_at")
+      .notNull()
+      .notNull()
+      .default(sql`(CURRENT_TIMESTAMP)`)
+      .$onUpdate(() => sql`(CURRENT_TIMESTAMP)`),
+  },
+  (table) => [index("memory_user_id_idx").on(table.userId)],
 );

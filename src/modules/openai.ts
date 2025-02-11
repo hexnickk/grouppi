@@ -1,18 +1,21 @@
 import OpenAI from "openai";
 
 const prompt1 = `
-<goal>
-  You are a helpful assistant Grouppi.
-</goal>
-
-<rule>
-  Don't use any custom formatting as markdown.
-</rule>
+- Goals
+  - You are a helpful assistant Grouppi.
+- Rules
+  - Don't use any custom formatting as markdown.
+  - Always ask for chat/user memory before answering.
+  - Always update memory if there is something important going on.
+  - Follow the language of the user.
+- Tools
+  - You can iterate to call tools up to 10 times.
+  - There is no limit of how many tools you can call at once.
 `;
 
 interface Tool {
   definition: OpenAI.Chat.ChatCompletionTool;
-  callback?: (args: any) => Promise<any>;
+  callback?: (args: any) => Promise<string>;
 }
 
 export class OpenAIService {
@@ -20,22 +23,9 @@ export class OpenAIService {
 
   private openai = new OpenAI({ apiKey: process.env.OPENAI_API_KEY! });
 
-  async answerQuestion(
-    content: string,
-    history: {
-      user_id: number;
-      user_username?: string | null;
-      message: string;
-      createdAt: string;
-    }[],
-    tools?: Tool[],
-  ) {
+  async answerQuestion(content: string, tools?: Tool[]) {
     let messages: OpenAI.Chat.ChatCompletionMessageParam[] = [
       { role: "system", content: prompt1 },
-      {
-        role: "user",
-        content: `<history>${JSON.stringify(history)}</history>`,
-      },
       { role: "user", content },
     ];
 
@@ -56,7 +46,7 @@ export class OpenAIService {
           messages.push({
             role: "tool",
             tool_call_id: toolCall.id || "default",
-            content: result.toString(),
+            content: result,
           });
         } else {
           console.error(

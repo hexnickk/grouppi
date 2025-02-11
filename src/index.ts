@@ -7,8 +7,10 @@ import {
   telegramMessagesSchema,
   telegramUsersSchema,
 } from "./schema";
-import { desc, eq } from "drizzle-orm";
+import { eq } from "drizzle-orm";
 import { browserService } from "./modules/browser";
+import { telegramService } from "./modules/telegram";
+import { memoryService } from "./modules/memory";
 
 // Add custom context interface
 interface BotContext extends Context {
@@ -19,7 +21,6 @@ const whitelist = process.env
   .TELEGRAM_GROUP_ID_WHITELIST!.split(",")
   .map(Number);
 const bot = new Telegraf<BotContext>(process.env.TELEGRAM_TOKEN!);
-const BOT_MEMORY_WINDOW = 20;
 
 let _botTelegramUser: SelectTelegramUsersSchema;
 
@@ -87,6 +88,8 @@ bot
         .values({
           pub_id: ctx.from.id,
           username: ctx.from.username,
+          firstName: ctx.from.first_name,
+          lastName: ctx.from.last_name,
         })
         .returning();
       user = newUser;
@@ -115,27 +118,83 @@ bot
     return await next();
   })
   .on(message("text"), async (ctx) => {
-    // ...existing database/history logic...
-    const messages = await db
-      .select()
-      .from(telegramMessagesSchema)
-      .where(eq(telegramMessagesSchema.groupId, ctx.chat.id))
-      .orderBy(desc(telegramMessagesSchema.createdAt))
-      .limit(BOT_MEMORY_WINDOW)
-      .innerJoin(
-        telegramUsersSchema,
-        eq(telegramMessagesSchema.userId, telegramUsersSchema.id),
-      );
-
     const answer = await openAIService.answerQuestion(
-      ctx.message.text,
-      messages.map(({ telegram_messages, telegram_users }) => ({
-        user_id: telegram_users.pub_id,
-        user_username: telegram_users.username,
-        message: telegram_messages.message,
-        createdAt: telegram_messages.createdAt,
-      })),
+      `
+<user>
+${JSON.stringify({ id: ctx.from.id, username: ctx.from.username, firstName: ctx.from.first_name, lastName: ctx.from.last_name })}
+</user>
+
+<content>
+${ctx.message.text}
+</content>
+`,
       [
+        {
+          definition: {
+            type: "function",
+            function: {
+              name: "get_last_messages",
+              description: "Get the last messages in the chat.",
+              parameters: {
+                type: "object",
+                properties: {
+                  count: {
+                    type: "number",
+                    description: "The number of messages to fetch.",
+                    default: 100,
+                  },
+                },
+                required: ["count"],
+                additionalProperties: false,
+              },
+              strict: false,
+            },
+          },
+          callback: ({ count }) =>
+            telegramService
+              .getLastMessages(ctx.chat.id, count)
+              .then((messages) => JSON.stringify(messages)),
+        },
+        {
+          definition: {
+            type: "function",
+            function: {
+              name: "get_day_messages",
+              description: "Get messages for last 24h.",
+              parameters: {
+                type: "object",
+                properties: {},
+                required: [],
+                additionalProperties: false,
+              },
+              strict: false,
+            },
+          },
+          callback: () =>
+            telegramService
+              .getDayMessages(ctx.chat.id)
+              .then((messages) => JSON.stringify(messages)),
+        },
+        {
+          definition: {
+            type: "function",
+            function: {
+              name: "get_week_messages",
+              description: "Get messages for last 7 days.",
+              parameters: {
+                type: "object",
+                properties: {},
+                required: [],
+                additionalProperties: false,
+              },
+              strict: false,
+            },
+          },
+          callback: () =>
+            telegramService
+              .getWeekMessages(ctx.chat.id)
+              .then((messages) => JSON.stringify(messages)),
+        },
         {
           definition: {
             type: "function",
@@ -158,6 +217,76 @@ bot
           },
           callback: ({ url }: { url: string }) =>
             browserService.getUrlContent(url),
+        },
+        {
+          definition: {
+            type: "function",
+            function: {
+              name: "read_chat_memory",
+              description: "Read the memory of the chat.",
+              parameters: {
+                type: "object",
+                properties: {},
+                required: [],
+                additionalProperties: false,
+              },
+              strict: false,
+            },
+          },
+          callback: () =>
+            memoryService
+              .readChatMemory(ctx.chat.id)
+              .then((memories) => JSON.stringify(memories)),
+        },
+        {
+          definition: {
+            type: "function",
+            function: {
+              name: "save_chat_memory_entry",
+              description: "Save a memory entry for the chat.",
+              parameters: {
+                type: "object",
+                properties: {
+                  memory: {
+                    type: "string",
+                    description: "The memory to save.",
+                  },
+                },
+                required: ["memory"],
+                additionalProperties: false,
+              },
+              strict: true,
+            },
+          },
+          callback: ({ memory }: { memory: string }) =>
+            memoryService
+              .saveChatMemoryEntry(ctx.chat.id, memory)
+              .then(() => "ok"),
+        },
+        {
+          definition: {
+            type: "function",
+            function: {
+              name: "delete_chat_memory_entry",
+              description: "Delete a memory entry for the chat.",
+              parameters: {
+                type: "object",
+                properties: {
+                  entry_id: {
+                    type: "number",
+                    description: "The ID of the memory entry to delete.",
+                  },
+                },
+                required: ["entry_id"],
+                additionalProperties: false,
+              },
+              strict: true,
+            },
+          },
+          callback: ({ entry_id }: { entry_id: number }) =>
+            memoryService
+              .deleteChatMemoryEntry(ctx.chat.id, entry_id)
+              .then(() => "ok"),
         },
       ],
     );
