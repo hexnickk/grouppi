@@ -1,5 +1,4 @@
 import OpenAI from "openai";
-import { browserService } from "./browser";
 
 const prompt1 = `
 <goal>
@@ -11,7 +10,14 @@ const prompt1 = `
 </rule>
 `;
 
+interface Tool {
+  definition: OpenAI.Chat.ChatCompletionTool;
+  callback?: (args: any) => Promise<any>;
+}
+
 export class OpenAIService {
+  private MAX_TOOL_ITERATIONS = 10;
+
   private openai = new OpenAI({ apiKey: process.env.OPENAI_API_KEY! });
 
   async answerQuestion(
@@ -22,9 +28,9 @@ export class OpenAIService {
       message: string;
       createdAt: string;
     }[],
-    tools?: any[],
+    tools?: Tool[],
   ) {
-    let messages: any[] = [
+    let messages: OpenAI.Chat.ChatCompletionMessageParam[] = [
       { role: "system", content: prompt1 },
       {
         role: "user",
@@ -33,45 +39,47 @@ export class OpenAIService {
       { role: "user", content },
     ];
 
-    let currentResponse = await this.openai.chat.completions.create({
-      model: "gpt-4o-mini",
-      messages,
-      tools: tools ?? [],
-      store: true,
-      temperature: 0,
-    });
+    const toolDefinitions = tools?.map((t) => t.definition) || [];
 
     let iteration = 0;
-    while (
-      iteration < 10 &&
-      Array.isArray(currentResponse.choices[0].message.tool_calls) &&
-      currentResponse.choices[0].message.tool_calls.length > 0
-    ) {
-      for (const toolCall of currentResponse.choices[0].message.tool_calls) {
-        // TODO: need to pass actual tool_call also as an argument, so this will be function agnostic
-        const { url } = JSON.parse(toolCall.function.arguments) as {
-          url: string;
-        };
-        const result = await browserService.getUrlContent(url);
+    let toolCalls: OpenAI.Chat.Completions.ChatCompletionMessageToolCall[] = [];
+    while (true) {
+      for (const toolCall of toolCalls) {
+        const args = JSON.parse(toolCall.function.arguments);
+        // Locate the matching tool by name and ensure it has a callback
+        const tool = tools?.find(
+          (tool) => tool.definition.function.name === toolCall.function.name,
+        );
 
-        messages.push(currentResponse.choices[0].message);
-        messages.push({
-          role: "tool",
-          tool_call_id: toolCall.id || "default",
-          content: result.toString(),
-        });
+        if (tool && tool.callback) {
+          const result = await tool.callback(args);
+          messages.push({
+            role: "tool",
+            tool_call_id: toolCall.id || "default",
+            content: result.toString(),
+          });
+        } else {
+          console.error(
+            `Error: No callback available for ${toolCall.function.name}`,
+          );
+        }
       }
-      // TODO: need to merge this call with initial call
-      currentResponse = await this.openai.chat.completions.create({
+      let currentResponse = await this.openai.chat.completions.create({
         model: "gpt-4o-mini",
         messages,
-        tools: tools ?? [],
-        store: true,
+        tools: toolDefinitions,
         temperature: 0,
       });
+      messages.push(currentResponse.choices[0].message);
+      toolCalls = currentResponse.choices[0].message.tool_calls || [];
       iteration++;
+
+      if (iteration > this.MAX_TOOL_ITERATIONS || toolCalls.length === 0) {
+        break;
+      }
     }
-    return currentResponse.choices[0].message.content || "";
+
+    return (messages.at(-1)?.content as string) || "";
   }
 }
 
