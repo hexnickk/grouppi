@@ -6,6 +6,9 @@ import { fileURLToPath } from "url";
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = dirname(__filename);
 
+const scriptPath = join(__dirname, "./pageEval.js");
+const scriptCode = readFileSync(scriptPath, "utf8");
+
 export class BrowserService {
   private browser: Browser | null = null;
 
@@ -27,17 +30,18 @@ export class BrowserService {
   }
 
   async getUrlContent(url: string) {
-    const browser = await this.initialize();
-    const page = await browser.newPage();
-    await page.goto(url);
+    try {
+      const browser = await this.initialize();
+      const page = await browser.newPage();
+      await page.goto(url);
 
-    // Use computed __dirname to read the evaluated code.
-    const filePath = join(__dirname, "./pageEval.js");
-    const evaluatedCode = readFileSync(filePath, "utf8");
-
-    const htmlContent = (await page.evaluate(evaluatedCode)) as string;
-    await page.close();
-    return htmlContent;
+      const htmlContent = (await page.evaluate(scriptCode)) as string;
+      await page.close();
+      return htmlContent;
+    } catch (error) {
+      console.error(error);
+      return "";
+    }
   }
 }
 
