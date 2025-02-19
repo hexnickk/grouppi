@@ -1,1 +1,1 @@
-- Add long term memory
+- Add todoist module for personal chats

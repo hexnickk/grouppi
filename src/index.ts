@@ -1,127 +1,70 @@
-import { Telegraf, Context } from "telegraf";
+import { Telegraf } from "telegraf";
 import { message } from "telegraf/filters";
 import { openAIService } from "./modules/openai";
 import { db } from "./db";
-import {
-  SelectTelegramUsersSchema,
-  telegramMessagesSchema,
-  telegramUsersSchema,
-} from "./schema";
+import { telegramChatsSchema, telegramMessagesSchema } from "./schema";
 import { eq } from "drizzle-orm";
 import { browserService } from "./modules/browser";
-import { telegramService } from "./modules/telegram";
+import {
+  TgBotContext,
+  TgRequestContext,
+  adminTelegramChatMiddleware,
+  botTelegramUserMiddleware,
+  telegramChatMiddleware,
+  telegramMessagesMiddleware,
+  telegramService,
+  telegramUserMiddleware,
+} from "./modules/telegram";
 import { memoryService } from "./modules/memory";
 
-// Add custom context interface
-interface BotContext extends Context {
-  botTelegramUser?: SelectTelegramUsersSchema;
-}
-
-const whitelist = process.env
-  .TELEGRAM_GROUP_ID_WHITELIST!.split(",")
-  .map(Number);
-const bot = new Telegraf<BotContext>(process.env.TELEGRAM_TOKEN!);
-
-let _botTelegramUser: SelectTelegramUsersSchema;
-
-async function initializeBotUser(bot: Telegraf) {
-  const botInfo = await bot.telegram.getMe();
-
-  let botTelegramUser: SelectTelegramUsersSchema;
-  const [existingBotTelegramUser] = await db
-    .select()
-    .from(telegramUsersSchema)
-    .where(eq(telegramUsersSchema.pub_id, botInfo.id));
-  botTelegramUser = existingBotTelegramUser;
-
-  if (!existingBotTelegramUser) {
-    const [newBotTelegramUser] = await db
-      .insert(telegramUsersSchema)
-      .values({
-        pub_id: botInfo.id,
-        username: botInfo.username,
-      })
-      .returning();
-    botTelegramUser = newBotTelegramUser;
-  }
-
-  _botTelegramUser = botTelegramUser;
-  console.log(`Bot user ${_botTelegramUser.username} initialized in database`);
-}
+export const bot = new Telegraf<TgBotContext>(process.env.TELEGRAM_TOKEN!);
 
 bot
-  .use(async (ctx, next) => {
-    ctx.botTelegramUser = _botTelegramUser;
-    return next();
+  // .use(chatTypeMiddleware)
+  .use(botTelegramUserMiddleware)
+  .use(adminTelegramChatMiddleware)
+  .use(telegramUserMiddleware)
+  .use(telegramChatMiddleware)
+  .use(telegramMessagesMiddleware)
+  .action(/approve_chat_(.*)/, async (ctx) => {
+    if (ctx.chat?.id !== bot.context.adminTelegramChat?.id) {
+      return;
+    }
+    const chatId = +ctx.match[1];
+    await db
+      .update(telegramChatsSchema)
+      .set({ approved: true })
+      .where(eq(telegramChatsSchema.pubId, chatId));
+
+    bot.telegram.sendMessage(chatId, "Your chat has been approved!");
+    await ctx.editMessageReplyMarkup({ inline_keyboard: [] });
+    return ctx.reply("Approved!");
   })
-  .use(async (ctx, next) => {
-    if (!ctx.message || !("text" in ctx.message) || !ctx.chat) {
+  .action(/reject_chat_(.*)/, async (ctx) => {
+    if (ctx.chat?.id !== bot.context.adminTelegramChat?.id) {
       return;
     }
-
-    // Skip if not from a group
-    if (!["group", "supergroup"].includes(ctx.chat.type)) {
-      return;
-    }
-
-    // Check if group is whitelisted
-    if (!whitelist.includes(ctx.chat.id)) {
-      return;
-    }
-
-    if (!ctx.from?.id) {
-      console.warn(`No user id found in message ${ctx.chat.id}`);
-      return;
-    }
-
-    // Save message to database
-    let user: SelectTelegramUsersSchema;
-    const [existingUser] = await db
-      .select()
-      .from(telegramUsersSchema)
-      .where(eq(telegramUsersSchema.pub_id, ctx.from.id));
-    user = existingUser;
-
-    if (!existingUser) {
-      const [newUser] = await db
-        .insert(telegramUsersSchema)
-        .values({
-          pub_id: ctx.from.id,
-          username: ctx.from.username,
-          firstName: ctx.from.first_name,
-          lastName: ctx.from.last_name,
-        })
-        .returning();
-      user = newUser;
-    }
-
-    await db.insert(telegramMessagesSchema).values({
-      groupId: ctx.chat.id,
-      userId: user.id,
-      message: ctx.message.text,
-    });
-
-    // Check for bot mention
-    const mentions = ctx.message.entities?.filter(
-      (entity) => entity.type === "mention",
-    );
-
-    if (!mentions?.length) return;
-
-    const botUsername = ctx.botInfo.username;
-    const mentionsBot = ctx.message.text
-      .slice(mentions[0].offset, mentions[0].offset + mentions[0].length)
-      .includes(botUsername!);
-
-    if (!mentionsBot) return;
-
-    return await next();
+    const chatId = +ctx.match[1];
+    await db
+      .update(telegramChatsSchema)
+      .set({ approved: false })
+      .where(eq(telegramChatsSchema.pubId, chatId));
+    await ctx.editMessageReplyMarkup({ inline_keyboard: [] });
+    return ctx.reply("Rejected!");
   })
-  .on(message("text"), async (ctx) => {
+  .on(message("text"), async (ctx: TgRequestContext) => {
+    if (ctx.chat == null || ctx.message == null || !("text" in ctx.message)) {
+      return;
+    }
     const answer = await openAIService.answerQuestion(
       `
 <user>
-${JSON.stringify({ id: ctx.from.id, username: ctx.from.username, firstName: ctx.from.first_name, lastName: ctx.from.last_name })}
+${JSON.stringify({
+  id: ctx.from?.id!,
+  username: ctx.from?.username,
+  firstName: ctx.from?.first_name,
+  lastName: ctx.from?.last_name,
+})}
 </user>
 
 <content>
@@ -152,7 +95,7 @@ ${ctx.message.text}
           },
           callback: ({ count }) =>
             telegramService
-              .getLastMessages(ctx.chat.id, count)
+              .getLastMessages(ctx.telegramChat?.id!, count)
               .then((messages) => JSON.stringify(messages)),
         },
         {
@@ -172,7 +115,7 @@ ${ctx.message.text}
           },
           callback: () =>
             telegramService
-              .getDayMessages(ctx.chat.id)
+              .getDayMessages(ctx.telegramChat?.id!)
               .then((messages) => JSON.stringify(messages)),
         },
         {
@@ -192,7 +135,7 @@ ${ctx.message.text}
           },
           callback: () =>
             telegramService
-              .getWeekMessages(ctx.chat.id)
+              .getWeekMessages(ctx.telegramChat?.id!)
               .then((messages) => JSON.stringify(messages)),
         },
         {
@@ -235,7 +178,7 @@ ${ctx.message.text}
           },
           callback: () =>
             memoryService
-              .readChatMemory(ctx.chat.id)
+              .readChatMemory(ctx.telegramChat?.id!)
               .then((memories) => JSON.stringify(memories)),
         },
         {
@@ -260,7 +203,7 @@ ${ctx.message.text}
           },
           callback: ({ memory }: { memory: string }) =>
             memoryService
-              .saveChatMemoryEntry(ctx.chat.id, memory)
+              .saveChatMemoryEntry(ctx.telegramChat?.id!, memory)
               .then(() => "ok"),
         },
         {
@@ -285,7 +228,7 @@ ${ctx.message.text}
           },
           callback: ({ entry_id }: { entry_id: number }) =>
             memoryService
-              .deleteChatMemoryEntry(ctx.chat.id, entry_id)
+              .deleteChatMemoryEntry(ctx.telegramChat?.id!, entry_id)
               .then(() => "ok"),
         },
       ],
@@ -293,15 +236,14 @@ ${ctx.message.text}
     if (!answer) return;
 
     await db.insert(telegramMessagesSchema).values({
-      groupId: ctx.chat.id,
-      userId: ctx.botTelegramUser!.id,
+      chatId: ctx.telegramChat?.id!,
+      userId: bot.context.botTelegramUser!.id,
       message: answer,
     });
 
     return ctx.reply(answer);
   })
   .launch(async () => {
-    await initializeBotUser(bot);
     console.log("Bot started.");
   });
 
