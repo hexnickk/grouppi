@@ -56,15 +56,30 @@ bot
     if (ctx.chat == null || ctx.message == null || !("text" in ctx.message)) {
       return;
     }
+
+    // Check for bot mention
+    const mentions = ctx.message.entities?.filter(
+      (entity) => entity.type === "mention",
+    );
+
+    if (!mentions?.length) return;
+
+    const botUsername = ctx.botInfo.username;
+    const mentionsBot = ctx.message.text
+      .slice(mentions[0].offset, mentions[0].offset + mentions[0].length)
+      .includes(botUsername!);
+
+    if (!mentionsBot) return;
+
     const answer = await openAIService.answerQuestion(
       `
 <user>
 ${JSON.stringify({
-  id: ctx.from?.id!,
-  username: ctx.from?.username,
-  firstName: ctx.from?.first_name,
-  lastName: ctx.from?.last_name,
-})}
+        id: ctx.from?.id!,
+        username: ctx.from?.username,
+        firstName: ctx.from?.first_name,
+        lastName: ctx.from?.last_name,
+      })}
 </user>
 
 <content>
