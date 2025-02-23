@@ -10,8 +10,5 @@ export namespace Env {
     return mapper ? mapper(value) : (value as unknown as T);
   };
 
-  export const telegramBotOwnerChatId = getRequired(
-    "TELEGRAM_BOT_OWNER_CHAT_ID",
-    Number,
-  );
+  export const telegramBotOwnerUsername = getRequired("TELEGRAM_BOT_OWNER");
 }

@@ -8,13 +8,18 @@ import {
   telegramUsersSchema,
 } from "../schema.js";
 import { bot } from "../index.js";
-import { Env } from "./env.js";
+import { Context } from "grammy";
+import { Config } from "./config.js";
 
 export namespace Telegram {
   let botUser: SelectTelegramUsersSchema;
 
-  export const isOwnerChat = (chatId: number) => {
-    return chatId === Env.telegramBotOwnerChatId;
+  export const isOwnerChat = (ctx: Context) => {
+    const ownerChatId = Config.getConfig("TELEGRAM_BOT_OWNER_CHAT_ID");
+    if (!ownerChatId) {
+      return false;
+    }
+    return ctx.chat?.id === Number(ownerChatId);
   };
 
   export const approveChat = async (chatId: number) => {

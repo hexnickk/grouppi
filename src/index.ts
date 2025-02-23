@@ -8,6 +8,7 @@ import { browserService } from "./modules/browser.js";
 import { Telegram, telegramService } from "./modules/telegram.js";
 import { memoryService } from "./modules/memory.js";
 import { Env } from "./modules/env.js";
+import { Config } from "./modules/config.js";
 
 /** Check for either of conditions:
  * 1. Bot is talking to user in private
@@ -47,8 +48,23 @@ bot.use(async (ctx, next) => {
   return next();
 });
 
+bot.use(async (ctx, next) => {
+  const ownerId = await Config.getConfig("TELEGRAM_BOT_OWNER_CHAT_ID");
+  if (
+    ownerId == null &&
+    ctx.chat?.type === "private" &&
+    ctx.from?.username === Env.telegramBotOwnerUsername
+  ) {
+    await Config.setConfig(
+      "TELEGRAM_BOT_OWNER_CHAT_ID",
+      ctx.chat.id.toString(),
+    );
+  }
+  return await next();
+});
+
 bot.callbackQuery(/approve_chat_(.*)/, async (ctx) => {
-  if (!Telegram.isOwnerChat(ctx.chat!.id)) {
+  if (!Telegram.isOwnerChat(ctx)) {
     return ctx.reply("You are not authorized to approve chats.");
   }
 
@@ -66,7 +82,7 @@ bot.callbackQuery(/approve_chat_(.*)/, async (ctx) => {
 });
 
 bot.callbackQuery(/reject_chat_(.*)/, async (ctx) => {
-  if (Telegram.isOwnerChat(ctx.chat!.id)) {
+  if (Telegram.isOwnerChat(ctx)) {
     return ctx.reply("You are not authorized to reject chats.");
   }
 
@@ -106,7 +122,7 @@ bot.use(async (ctx, next) => {
       ? `New group chat "${ctx.chat!.title}" (${ctx.chat!.id}) added to the database. Please approve or reject it.`
       : `New private chat with @${ctx.chat!.username} ${ctx.chat!.first_name} ${ctx.chat!.last_name} (${ctx.chat!.id}) added to the database. Please approve or reject it.`;
 
-  await bot.api.sendMessage(Env.telegramBotOwnerChatId, message, {
+  await bot.api.sendMessage(Env.telegramBotOwnerUsername, message, {
     reply_markup: new InlineKeyboard()
       .text("Approve", `approve_chat_${ctx.chat!.id}`)
       .text("Reject", `reject_chat_${ctx.chat!.id}`),
