@@ -174,6 +174,12 @@ bot.on("message:text", async (ctx) => {
   const chatDailyMessages = await telegramService.getDayMessages(
     ctx.telegramChat!.id,
   );
+  const chatFewMessages = await telegramService.getLastMessages(
+    ctx.telegramChat!.id,
+    20,
+  );
+  const chatMessages = chatDailyMessages.length > chatFewMessages.length ? chatDailyMessages : chatFewMessages;
+
   const chatMemory = await memoryService.readChatMemory(ctx.telegramChat!.id);
 
   const answer = await openAIService.answerQuestion(
@@ -185,20 +191,20 @@ ${message}
 <context>
   <user>
   ${JSON.stringify({
-    id: ctx.from?.id!,
-    username: ctx.from?.username,
-    firstName: ctx.from?.first_name,
-    lastName: ctx.from?.last_name,
-  })}
+      id: ctx.from?.id!,
+      username: ctx.from?.username,
+      firstName: ctx.from?.first_name,
+      lastName: ctx.from?.last_name,
+    })}
   </user>
 
   <chat-memory>
   ${JSON.stringify(chatMemory)}
   </chat-memory>
 
-  <chat-dayly-messages>
-  ${JSON.stringify(chatDailyMessages)}
-  </chat-dayly-messages>
+  <chat-messages-latest>
+  ${JSON.stringify(chatMessages)}
+  </chat-messages-latest>
 </context>
 `,
     [
