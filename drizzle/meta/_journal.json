@@ -36,6 +36,13 @@
       "when": 1740333805308,
       "tag": "0004_dear_firestar",
       "breakpoints": true
+    },
+    {
+      "idx": 5,
+      "version": "6",
+      "when": 1740353465364,
+      "tag": "0005_rich_yellowjacket",
+      "breakpoints": true
     }
   ]
 }

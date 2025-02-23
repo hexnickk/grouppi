@@ -1,0 +1,1 @@
+CREATE UNIQUE INDEX `telegram_chats_pub_id_unique` ON `telegram_chats` (`pub_id`);

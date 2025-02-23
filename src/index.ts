@@ -48,21 +48,6 @@ bot.use(async (ctx, next) => {
   return next();
 });
 
-bot.use(async (ctx, next) => {
-  const ownerId = await Config.getConfig("TELEGRAM_BOT_OWNER_CHAT_ID");
-  if (
-    ownerId == null &&
-    ctx.chat?.type === "private" &&
-    ctx.from?.username === Env.telegramBotOwnerUsername
-  ) {
-    await Config.setConfig(
-      "TELEGRAM_BOT_OWNER_CHAT_ID",
-      ctx.chat.id.toString(),
-    );
-  }
-  return await next();
-});
-
 bot.callbackQuery(/approve_chat_(.*)/, async (ctx) => {
   if (!Telegram.isOwnerChat(ctx)) {
     return ctx.reply("You are not authorized to approve chats.");
@@ -82,7 +67,7 @@ bot.callbackQuery(/approve_chat_(.*)/, async (ctx) => {
 });
 
 bot.callbackQuery(/reject_chat_(.*)/, async (ctx) => {
-  if (Telegram.isOwnerChat(ctx)) {
+  if (!Telegram.isOwnerChat(ctx)) {
     return ctx.reply("You are not authorized to reject chats.");
   }
 
@@ -97,6 +82,26 @@ bot.callbackQuery(/reject_chat_(.*)/, async (ctx) => {
   bot.api.sendMessage(chatId, "Your chat has been rejected :(");
   await ctx.editMessageReplyMarkup({ reply_markup: { inline_keyboard: [] } });
   return ctx.reply("Rejected!");
+});
+
+bot.use(async (ctx, next) => {
+  const ownerId = await Config.getConfig("TELEGRAM_BOT_OWNER_CHAT_ID");
+  if (ownerId != null) {
+    return await next();
+  }
+
+  if (
+    ctx.chat?.type === "private" &&
+    ctx.from?.username === Env.telegramBotOwnerUsername
+  ) {
+    await Config.setConfig(
+      "TELEGRAM_BOT_OWNER_CHAT_ID",
+      ctx.chat.id.toString(),
+    );
+    return await next();
+  }
+
+  return;
 });
 
 // announce to admin a new chat
@@ -122,7 +127,12 @@ bot.use(async (ctx, next) => {
       ? `New group chat "${ctx.chat!.title}" (${ctx.chat!.id}) added to the database. Please approve or reject it.`
       : `New private chat with @${ctx.chat!.username} ${ctx.chat!.first_name} ${ctx.chat!.last_name} (${ctx.chat!.id}) added to the database. Please approve or reject it.`;
 
-  await bot.api.sendMessage(Env.telegramBotOwnerUsername, message, {
+  const ownerChatId = await Config.getConfig("TELEGRAM_BOT_OWNER_CHAT_ID");
+  if (ownerChatId == null) {
+    return;
+  }
+
+  await bot.api.sendMessage(ownerChatId, message, {
     reply_markup: new InlineKeyboard()
       .text("Approve", `approve_chat_${ctx.chat!.id}`)
       .text("Reject", `reject_chat_${ctx.chat!.id}`),
@@ -178,7 +188,10 @@ bot.on("message:text", async (ctx) => {
     ctx.telegramChat!.id,
     20,
   );
-  const chatMessages = chatDailyMessages.length > chatFewMessages.length ? chatDailyMessages : chatFewMessages;
+  const chatMessages =
+    chatDailyMessages.length > chatFewMessages.length
+      ? chatDailyMessages
+      : chatFewMessages;
 
   const chatMemory = await memoryService.readChatMemory(ctx.telegramChat!.id);
 
@@ -191,11 +204,11 @@ ${message}
 <context>
   <user>
   ${JSON.stringify({
-      id: ctx.from?.id!,
-      username: ctx.from?.username,
-      firstName: ctx.from?.first_name,
-      lastName: ctx.from?.last_name,
-    })}
+    id: ctx.from?.id!,
+    username: ctx.from?.username,
+    firstName: ctx.from?.first_name,
+    lastName: ctx.from?.last_name,
+  })}
   </user>
 
   <chat-memory>

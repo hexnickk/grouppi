@@ -55,7 +55,7 @@ export const telegramChatsSchema = sqliteTable(
   "telegram_chats",
   {
     id: int("id").primaryKey({ autoIncrement: true }),
-    pubId: int("pub_id").notNull(),
+    pubId: int("pub_id").notNull().unique(),
     approved: int("approved", { mode: "boolean" }),
     createdAt: text("created_at")
       .notNull()

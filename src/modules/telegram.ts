@@ -14,8 +14,8 @@ import { Config } from "./config.js";
 export namespace Telegram {
   let botUser: SelectTelegramUsersSchema;
 
-  export const isOwnerChat = (ctx: Context) => {
-    const ownerChatId = Config.getConfig("TELEGRAM_BOT_OWNER_CHAT_ID");
+  export const isOwnerChat = async (ctx: Context) => {
+    const ownerChatId = await Config.getConfig("TELEGRAM_BOT_OWNER_CHAT_ID");
     if (!ownerChatId) {
       return false;
     }
