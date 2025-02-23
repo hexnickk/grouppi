@@ -9,6 +9,3 @@ RUN npx playwright install-deps
 RUN npx playwright install
 
 COPY . .
-
-COPY entrypoint.sh .
-ENTRYPOINT ["./entrypoint.sh"]

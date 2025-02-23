@@ -1,4 +1,7 @@
 {
   "image": "mcr.microsoft.com/devcontainers/typescript-node:1-22-bookworm",
-  "forwardPorts": [3000]
+  "mounts": [
+    "source=${localWorkspaceFolderBasename}-node_modules,target=/workspace/node_modules,type=volume"
+  ],
+  "postCreateCommand": "sudo chown -R node:node /workspace/node_modules"
 }

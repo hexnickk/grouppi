@@ -1,271 +1,302 @@
-import { Telegraf } from "telegraf";
-import { message } from "telegraf/filters";
-import { openAIService } from "./modules/openai";
-import { db } from "./db";
-import { telegramChatsSchema, telegramMessagesSchema } from "./schema";
-import { eq } from "drizzle-orm";
-import { browserService } from "./modules/browser";
+import { Bot, Context, InlineKeyboard } from "grammy";
+import { openAIService } from "./modules/openai.js";
 import {
-  TgBotContext,
-  TgRequestContext,
-  adminTelegramChatMiddleware,
-  botTelegramUserMiddleware,
-  telegramChatMiddleware,
-  telegramMessagesMiddleware,
-  telegramService,
-  telegramUserMiddleware,
-} from "./modules/telegram";
-import { memoryService } from "./modules/memory";
+  SelectTelegramChatsSchema,
+  SelectTelegramUsersSchema,
+} from "./schema.js";
+import { browserService } from "./modules/browser.js";
+import { Telegram, telegramService } from "./modules/telegram.js";
+import { memoryService } from "./modules/memory.js";
+import { Env } from "./modules/env.js";
 
-export const bot = new Telegraf<TgBotContext>(process.env.TELEGRAM_TOKEN!);
-
-bot
-  // .use(chatTypeMiddleware)
-  .use(botTelegramUserMiddleware)
-  .use(adminTelegramChatMiddleware)
-  .use(telegramUserMiddleware)
-  .use(telegramChatMiddleware)
-  .use(telegramMessagesMiddleware)
-  .action(/approve_chat_(.*)/, async (ctx) => {
-    if (ctx.chat?.id !== bot.context.adminTelegramChat?.id) {
-      return;
+/** Check for either of conditions:
+ * 1. Bot is talking to user in private
+ * 2. Bot is talking to user in group && bot was mentioned
+ */
+const shouldAnswer = (ctx: BotContext) => {
+  if (ctx.chat?.type === "private") {
+    return true;
+  }
+  if (ctx.chat?.type === "supergroup" || ctx.chat?.type === "group") {
+    if (ctx.message?.entities) {
+      return ctx.message.entities.some(
+        (entity) =>
+          entity.type === "mention" &&
+          ctx.message?.text?.slice(
+            entity.offset,
+            entity.offset + entity.length,
+          ) === `@${ctx.me?.username}`,
+      );
     }
-    const chatId = +ctx.match[1];
-    await db
-      .update(telegramChatsSchema)
-      .set({ approved: true })
-      .where(eq(telegramChatsSchema.pubId, chatId));
+  }
+  return false;
+};
 
-    bot.telegram.sendMessage(chatId, "Your chat has been approved!");
-    await ctx.editMessageReplyMarkup({ inline_keyboard: [] });
-    return ctx.reply("Approved!");
-  })
-  .action(/reject_chat_(.*)/, async (ctx) => {
-    if (ctx.chat?.id !== bot.context.adminTelegramChat?.id) {
-      return;
-    }
-    const chatId = +ctx.match[1];
-    await db
-      .update(telegramChatsSchema)
-      .set({ approved: false })
-      .where(eq(telegramChatsSchema.pubId, chatId));
-    await ctx.editMessageReplyMarkup({ inline_keyboard: [] });
-    return ctx.reply("Rejected!");
-  })
-  .on(message("text"), async (ctx: TgRequestContext) => {
-    if (ctx.chat == null || ctx.message == null || !("text" in ctx.message)) {
-      return;
-    }
+type BotContext = Context & {
+  telegramChat?: SelectTelegramChatsSchema;
+  telegramUser?: SelectTelegramUsersSchema;
+};
 
-    // Check for bot mention
-    const mentions = ctx.message.entities?.filter(
-      (entity) => entity.type === "mention",
-    );
+export const bot = new Bot<BotContext>(process.env.TELEGRAM_TOKEN!);
 
-    if (!mentions?.length) return;
+// check if there is a chat at all
+bot.use(async (ctx, next) => {
+  if (ctx.chat == null || ctx.from == null) {
+    return;
+  }
+  return next();
+});
 
-    const botUsername = ctx.botInfo.username;
-    const mentionsBot = ctx.message.text
-      .slice(mentions[0].offset, mentions[0].offset + mentions[0].length)
-      .includes(botUsername!);
+bot.callbackQuery(/approve_chat_(.*)/, async (ctx) => {
+  if (!Telegram.isOwnerChat(ctx.chat!.id)) {
+    return ctx.reply("You are not authorized to approve chats.");
+  }
 
-    if (!mentionsBot) return;
+  const data = ctx.callbackQuery.data;
+  const match = data ? data.match(/approve_chat_(.*)/) : null;
+  if (!match) {
+    console.error(`Invalid callback match: ${data}`);
+    return;
+  }
+  const chatId = +match[1];
+  await Telegram.approveChat(chatId);
+  bot.api.sendMessage(chatId, "Your chat has been approved!");
+  await ctx.editMessageReplyMarkup({ reply_markup: { inline_keyboard: [] } });
+  return ctx.reply("Approved!");
+});
 
-    const answer = await openAIService.answerQuestion(
-      `
-<user>
-${JSON.stringify({
-        id: ctx.from?.id!,
-        username: ctx.from?.username,
-        firstName: ctx.from?.first_name,
-        lastName: ctx.from?.last_name,
-      })}
-</user>
+bot.callbackQuery(/reject_chat_(.*)/, async (ctx) => {
+  if (Telegram.isOwnerChat(ctx.chat!.id)) {
+    return ctx.reply("You are not authorized to reject chats.");
+  }
 
-<content>
-${ctx.message.text}
-</content>
-`,
-      [
-        {
-          definition: {
-            type: "function",
-            function: {
-              name: "get_last_messages",
-              description: "Get the last messages in the chat.",
-              parameters: {
-                type: "object",
-                properties: {
-                  count: {
-                    type: "number",
-                    description: "The number of messages to fetch.",
-                    default: 100,
-                  },
-                },
-                required: ["count"],
-                additionalProperties: false,
-              },
-              strict: false,
-            },
-          },
-          callback: ({ count }) =>
-            telegramService
-              .getLastMessages(ctx.telegramChat?.id!, count)
-              .then((messages) => JSON.stringify(messages)),
-        },
-        {
-          definition: {
-            type: "function",
-            function: {
-              name: "get_day_messages",
-              description: "Get messages for last 24h.",
-              parameters: {
-                type: "object",
-                properties: {},
-                required: [],
-                additionalProperties: false,
-              },
-              strict: false,
-            },
-          },
-          callback: () =>
-            telegramService
-              .getDayMessages(ctx.telegramChat?.id!)
-              .then((messages) => JSON.stringify(messages)),
-        },
-        {
-          definition: {
-            type: "function",
-            function: {
-              name: "get_week_messages",
-              description: "Get messages for last 7 days.",
-              parameters: {
-                type: "object",
-                properties: {},
-                required: [],
-                additionalProperties: false,
-              },
-              strict: false,
-            },
-          },
-          callback: () =>
-            telegramService
-              .getWeekMessages(ctx.telegramChat?.id!)
-              .then((messages) => JSON.stringify(messages)),
-        },
-        {
-          definition: {
-            type: "function",
-            function: {
-              name: "get_browser_content",
-              description: "Fetch HTML content from a website URL.",
-              parameters: {
-                type: "object",
-                properties: {
-                  url: {
-                    type: "string",
-                    description: "The website URL to fetch HTML content from",
-                  },
-                },
-                required: ["url"],
-                additionalProperties: false,
-              },
-              strict: true,
-            },
-          },
-          callback: ({ url }: { url: string }) =>
-            browserService.getUrlContent(url),
-        },
-        {
-          definition: {
-            type: "function",
-            function: {
-              name: "read_chat_memory",
-              description: "Read the memory of the chat.",
-              parameters: {
-                type: "object",
-                properties: {},
-                required: [],
-                additionalProperties: false,
-              },
-              strict: false,
-            },
-          },
-          callback: () =>
-            memoryService
-              .readChatMemory(ctx.telegramChat?.id!)
-              .then((memories) => JSON.stringify(memories)),
-        },
-        {
-          definition: {
-            type: "function",
-            function: {
-              name: "save_chat_memory_entry",
-              description: "Save a memory entry for the chat.",
-              parameters: {
-                type: "object",
-                properties: {
-                  memory: {
-                    type: "string",
-                    description: "The memory to save.",
-                  },
-                },
-                required: ["memory"],
-                additionalProperties: false,
-              },
-              strict: true,
-            },
-          },
-          callback: ({ memory }: { memory: string }) =>
-            memoryService
-              .saveChatMemoryEntry(ctx.telegramChat?.id!, memory)
-              .then(() => "ok"),
-        },
-        {
-          definition: {
-            type: "function",
-            function: {
-              name: "delete_chat_memory_entry",
-              description: "Delete a memory entry for the chat.",
-              parameters: {
-                type: "object",
-                properties: {
-                  entry_id: {
-                    type: "number",
-                    description: "The ID of the memory entry to delete.",
-                  },
-                },
-                required: ["entry_id"],
-                additionalProperties: false,
-              },
-              strict: true,
-            },
-          },
-          callback: ({ entry_id }: { entry_id: number }) =>
-            memoryService
-              .deleteChatMemoryEntry(ctx.telegramChat?.id!, entry_id)
-              .then(() => "ok"),
-        },
-      ],
-    );
-    if (!answer) return;
+  const data = ctx.callbackQuery.data;
+  const match = data ? data.match(/reject_chat_(.*)/) : null;
+  if (!match) {
+    console.error(`Invalid callback match: ${data}`);
+    return;
+  }
+  const chatId = +match[1];
+  await Telegram.rejectChat(chatId);
+  bot.api.sendMessage(chatId, "Your chat has been rejected :(");
+  await ctx.editMessageReplyMarkup({ reply_markup: { inline_keyboard: [] } });
+  return ctx.reply("Rejected!");
+});
 
-    await db.insert(telegramMessagesSchema).values({
-      chatId: ctx.telegramChat?.id!,
-      userId: bot.context.botTelegramUser!.id,
-      message: answer,
-    });
+// announce to admin a new chat
+bot.use(async (ctx, next) => {
+  const chat = await Telegram.getChatByPubId(ctx.chat!.id);
+  ctx.telegramChat = chat;
 
-    return ctx.reply(answer);
-  })
-  .launch(async () => {
-    console.log("Bot started.");
+  // approved chat
+  if (chat && chat.approved) {
+    return await next();
+  }
+
+  // pending or unapproved chat
+  if (chat) {
+    return;
+  }
+
+  // new chat
+  await Telegram.createChat(ctx.chat!.id);
+
+  const message =
+    ctx.chat!.id < 0
+      ? `New group chat "${ctx.chat!.title}" (${ctx.chat!.id}) added to the database. Please approve or reject it.`
+      : `New private chat with @${ctx.chat!.username} ${ctx.chat!.first_name} ${ctx.chat!.last_name} (${ctx.chat!.id}) added to the database. Please approve or reject it.`;
+
+  await bot.api.sendMessage(Env.telegramBotOwnerChatId, message, {
+    reply_markup: new InlineKeyboard()
+      .text("Approve", `approve_chat_${ctx.chat!.id}`)
+      .text("Reject", `reject_chat_${ctx.chat!.id}`),
   });
 
-process.once("SIGINT", async () => {
-  bot.stop("SIGINT");
+  return;
 });
 
-process.once("SIGTERM", async () => {
-  bot.stop("SIGTERM");
+bot.use(async (ctx, next) => {
+  let user: SelectTelegramUsersSchema;
+  const existingUser = await Telegram.getUserByPubId(ctx.from!.id);
+  user = existingUser;
+  if (existingUser == null) {
+    const newUser = await Telegram.createUser({
+      pubId: ctx.from!.id,
+      username: ctx.from!.username,
+      firstName: ctx.from!.first_name,
+      lastName: ctx.from!.last_name,
+    });
+    user = newUser;
+  }
+  ctx.telegramUser = user;
+  return await next();
 });
+
+bot.use(async (ctx, next) => {
+  const message = ctx.message?.text;
+  if (message == null) {
+    return await next();
+  }
+  await Telegram.trackMessage({
+    chatId: ctx.telegramChat!.id,
+    userId: ctx.telegramUser!.id,
+    message: message,
+  });
+  return await next();
+});
+
+bot.on("message:text", async (ctx) => {
+  const message = ctx.message.text;
+  if (message == null) {
+    return;
+  }
+
+  if (!shouldAnswer(ctx)) {
+    return;
+  }
+
+  const chatDailyMessages = await telegramService.getDayMessages(
+    ctx.telegramChat!.id,
+  );
+  const chatMemory = await memoryService.readChatMemory(ctx.telegramChat!.id);
+
+  const answer = await openAIService.answerQuestion(
+    `
+<content>
+${message}
+</content>
+
+<context>
+  <user>
+  ${JSON.stringify({
+    id: ctx.from?.id!,
+    username: ctx.from?.username,
+    firstName: ctx.from?.first_name,
+    lastName: ctx.from?.last_name,
+  })}
+  </user>
+
+  <chat-memory>
+  ${JSON.stringify(chatMemory)}
+  </chat-memory>
+
+  <chat-dayly-messages>
+  ${JSON.stringify(chatDailyMessages)}
+  </chat-dayly-messages>
+</context>
+`,
+    [
+      {
+        definition: {
+          type: "function",
+          function: {
+            name: "get_week_messages",
+            description: "Get messages for last 7 days.",
+            parameters: {
+              type: "object",
+              properties: {},
+              required: [],
+              additionalProperties: false,
+            },
+            strict: false,
+          },
+        },
+        callback: () =>
+          telegramService
+            .getWeekMessages(ctx.telegramChat?.id!)
+            .then((messages) => JSON.stringify(messages)),
+      },
+      {
+        definition: {
+          type: "function",
+          function: {
+            name: "get_browser_content",
+            description: "Fetch HTML content from a website URL.",
+            parameters: {
+              type: "object",
+              properties: {
+                url: {
+                  type: "string",
+                  description: "The website URL to fetch HTML content from",
+                },
+              },
+              required: ["url"],
+              additionalProperties: false,
+            },
+            strict: true,
+          },
+        },
+        callback: ({ url }: { url: string }) =>
+          browserService.getUrlContent(url),
+      },
+      {
+        definition: {
+          type: "function",
+          function: {
+            name: "save_chat_memory_entry",
+            description: "Save a memory entry for the chat.",
+            parameters: {
+              type: "object",
+              properties: {
+                memory: {
+                  type: "string",
+                  description: "The memory to save.",
+                },
+              },
+              required: ["memory"],
+              additionalProperties: false,
+            },
+            strict: true,
+          },
+        },
+        callback: ({ memory }: { memory: string }) =>
+          memoryService
+            .saveChatMemoryEntry(ctx.telegramChat?.id!, memory)
+            .then(() => "ok"),
+      },
+      {
+        definition: {
+          type: "function",
+          function: {
+            name: "delete_chat_memory_entry",
+            description: "Delete a memory entry for the chat.",
+            parameters: {
+              type: "object",
+              properties: {
+                entry_id: {
+                  type: "number",
+                  description: "The ID of the memory entry to delete.",
+                },
+              },
+              required: ["entry_id"],
+              additionalProperties: false,
+            },
+            strict: true,
+          },
+        },
+        callback: ({ entry_id }: { entry_id: number }) =>
+          memoryService
+            .deleteChatMemoryEntry(ctx.telegramChat?.id!, entry_id)
+            .then(() => "ok"),
+      },
+    ],
+  );
+  if (!answer) return;
+
+  await Telegram.trackMessage({
+    chatId: ctx.telegramChat?.id!,
+    userId: await Telegram.getBotId(),
+    message: answer,
+  });
+
+  return ctx.reply(answer);
+});
+
+bot.start({
+  onStart: async () => {
+    console.log("Bot started.");
+  },
+});
+
+process.once("SIGINT", () => bot.stop());
+process.once("SIGTERM", () => bot.stop());

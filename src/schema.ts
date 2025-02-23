@@ -65,3 +65,12 @@ export const telegramChatsSchema = sqliteTable(
 );
 
 export type SelectTelegramChatsSchema = typeof telegramChatsSchema.$inferSelect;
+
+export const configSchema = sqliteTable(
+  "config",
+  {
+    key: text("key").primaryKey().unique(),
+    value: text("value").notNull(),
+  },
+  (table) => [index("config_key_idx").on(table.key)],
+);

@@ -1,6 +1,6 @@
 import { and, eq } from "drizzle-orm";
-import { db } from "../db";
-import { telegramChatMemorySchema } from "../schema";
+import { db } from "../db.js";
+import { telegramChatMemorySchema } from "../schema.js";
 
 export class MemoryService {
   async readChatMemory(chatId: number) {

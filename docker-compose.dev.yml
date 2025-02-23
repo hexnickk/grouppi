@@ -3,7 +3,6 @@ services:
     build:
       context: .
       dockerfile: Dockerfile
-    entrypoint: ["./entrypoint.sh"]
-    restart: always
+    entrypoint: ["npm", "run", "dev"]
     volumes:
-      - ./storage:/app/storage
+      - ./:/app
